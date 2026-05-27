@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Squat Tracker"
+version = "1.0.0"
+id = "artifacts/squat-tracker"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21640
+
+[services.development]
+run = "pnpm --filter @workspace/squat-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/squat-tracker", "run", "build" ]
+publicDir = "artifacts/squat-tracker/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21640"
+BASE_PATH = "/"
