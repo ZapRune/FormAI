@@ -1,10 +1,19 @@
+import type { ExerciseMode } from "./poseUtils";
+
 export interface SetSummary {
+  exercise: ExerciseMode;
   reps: number;
-  avgFormScore: number;
-  deepReps: number;
   totalReps: number;
-  backRoundedCount: number;
-  kneeCaveCount: number;
+  avgFormScore: number;
+  // Squat-specific
+  deepReps?: number;
+  backRoundedCount?: number;
+  kneeCaveCount?: number;
+  // Curl-specific
+  elbowSwingCount?: number;
+  shortRangeCount?: number;
+  leftReps?: number;
+  rightReps?: number;
 }
 
 export function getLetterGrade(avgScore: number): { grade: string; color: string } {
@@ -17,21 +26,27 @@ export function getLetterGrade(avgScore: number): { grade: string; color: string
 
 export async function generateAIFeedback(summary: SetSummary): Promise<string> {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) {
-    return generateFallbackFeedback(summary);
-  }
+  if (!apiKey) return generateFallbackFeedback(summary);
 
-  const prompt = `You are an encouraging and expert personal trainer specializing in squat form. 
-A user just completed a set of squats. Here are their stats:
-- Total reps completed: ${summary.totalReps}
-- Reps with full depth (hip below knee): ${summary.deepReps} out of ${summary.totalReps}
+  const isSquat = summary.exercise === "squat";
+
+  const prompt = isSquat
+    ? `You are an encouraging expert personal trainer specialising in squat form.
+A user just completed a set of squats. Stats:
+- Total reps: ${summary.totalReps}
+- Reps with full depth (hip below knee): ${summary.deepReps ?? 0} / ${summary.totalReps}
 - Average form score: ${summary.avgFormScore}/100
-- Reps where back rounded: ${summary.backRoundedCount}
-- Reps where knees caved in: ${summary.kneeCaveCount}
+- Reps with back rounding: ${summary.backRoundedCount ?? 0}
+- Reps with knees caving in: ${summary.kneeCaveCount ?? 0}
+Write a short, friendly, encouraging 2-3 sentence summary. Be specific about what they did well and give one concrete actionable tip. No bullet points.`
 
-Write a short, friendly, encouraging 2-3 sentence summary of their performance. 
-Be specific about what they did well and give one concrete actionable tip for improvement.
-Keep it upbeat, like a supportive coach. Do not use bullet points or lists.`;
+    : `You are an encouraging expert personal trainer specialising in bicep curl form.
+A user just completed a set of bicep curls. Stats:
+- Total reps: ${summary.totalReps} (Left: ${summary.leftReps ?? 0}, Right: ${summary.rightReps ?? 0})
+- Average form score: ${summary.avgFormScore}/100
+- Reps with elbow swinging forward: ${summary.elbowSwingCount ?? 0}
+- Reps without full range of motion (didn't reach peak contraction): ${summary.shortRangeCount ?? 0}
+Write a short, friendly, encouraging 2-3 sentence summary. Be specific about what they did well and give one concrete actionable tip. No bullet points.`;
 
   try {
     const response = await fetch(
@@ -54,22 +69,36 @@ Keep it upbeat, like a supportive coach. Do not use bullet points or lists.`;
 }
 
 function generateFallbackFeedback(summary: SetSummary): string {
-  const { totalReps, deepReps, avgFormScore, backRoundedCount, kneeCaveCount } = summary;
-  if (totalReps === 0) return "No reps recorded this set. Get into frame, stand tall, and start squatting!";
+  const { totalReps, avgFormScore, exercise } = summary;
+  if (totalReps === 0) return "No reps recorded this set. Get into position and let's go!";
 
-  const deepPct = Math.round((deepReps / totalReps) * 100);
+  if (exercise === "curl") {
+    const swingPct = Math.round(((summary.elbowSwingCount ?? 0) / totalReps) * 100);
+    if (avgFormScore >= 85) {
+      return `Great set! ${totalReps} solid reps with a ${avgFormScore}/100 form score. Your elbows stayed locked in — that's exactly the technique that builds real bicep strength!`;
+    }
+    if (swingPct > 40) {
+      return `Nice effort on ${totalReps} reps! Your elbows are swinging a bit — try pinning them to your sides throughout the whole movement. You'll feel the biceps working much harder!`;
+    }
+    if ((summary.shortRangeCount ?? 0) > totalReps * 0.4) {
+      return `Solid ${totalReps} reps! Try squeezing all the way to the top so the angle drops under 70° — a full contraction makes every rep count more. You're close!`;
+    }
+    return `Good work — ${totalReps} reps with a ${avgFormScore}/100 score! Keep focusing on controlled movement and you'll build impressive arms in no time!`;
+  }
 
+  // squat
+  const deepPct = Math.round(((summary.deepReps ?? 0) / totalReps) * 100);
   if (avgFormScore >= 85 && deepPct >= 80) {
-    return `Excellent set! You hit ${totalReps} solid reps with great depth on ${deepPct}% of them. Your form score of ${avgFormScore}/100 shows real consistency — keep it up!`;
+    return `Excellent set! ${totalReps} solid reps with great depth on ${deepPct}% of them. Your ${avgFormScore}/100 form score shows real consistency — keep it up!`;
   }
-  if (backRoundedCount > totalReps * 0.5) {
-    return `Good effort on ${totalReps} reps! Your back is rounding a bit — try bracing your core tighter before descending and keep your chest up. You've got this!`;
+  if ((summary.backRoundedCount ?? 0) > totalReps * 0.5) {
+    return `Good effort on ${totalReps} reps! Your back is rounding a bit — try bracing your core before descending and keep your chest up. You've got this!`;
   }
-  if (kneeCaveCount > totalReps * 0.5) {
-    return `Solid ${totalReps} reps! Focus on pushing your knees out in line with your toes — think about "spreading the floor" with your feet. That'll clean up your form quickly!`;
+  if ((summary.kneeCaveCount ?? 0) > totalReps * 0.5) {
+    return `Solid ${totalReps} reps! Focus on pushing your knees out in line with your toes — "spread the floor" with your feet. That'll clean up your form fast!`;
   }
   if (deepPct < 50) {
     return `Nice work on ${totalReps} reps! Try to drop a little deeper — aim to get your hip crease below your knee for full range of motion. It's harder but so worth it!`;
   }
-  return `Good set with ${totalReps} reps and a form score of ${avgFormScore}/100! Keep focusing on depth and bracing, and you'll be hitting perfect squats in no time!`;
+  return `Good set — ${totalReps} reps with a ${avgFormScore}/100 score! Keep focusing on depth and bracing and you'll be hitting perfect squats in no time!`;
 }

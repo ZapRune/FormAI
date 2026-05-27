@@ -11,6 +11,7 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
   const [feedback, setFeedback] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const { grade, color } = getLetterGrade(summary.avgFormScore);
+  const isCurl = summary.exercise === "curl";
 
   useEffect(() => {
     setLoading(true);
@@ -19,10 +20,6 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
       setLoading(false);
     });
   }, [summary]);
-
-  const deepPct = summary.totalReps > 0
-    ? Math.round((summary.deepReps / summary.totalReps) * 100)
-    : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -35,6 +32,9 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
         <div className="flex items-center gap-3">
           <Trophy className="w-6 h-6" style={{ color }} />
           <h2 className="text-xl font-bold text-foreground">Set Complete!</h2>
+          <span className="ml-auto text-xs font-semibold tracking-widest uppercase text-muted-foreground border border-border rounded-lg px-2 py-1">
+            {isCurl ? "Bicep Curl" : "Squat"}
+          </span>
         </div>
 
         {/* Grade */}
@@ -55,21 +55,49 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
 
         {/* Stats grid */}
         <div className="grid grid-cols-3 gap-3">
-          <StatBox label="Reps" value={summary.totalReps} color="#4ade80" testId="stat-reps" />
-          <StatBox label="Avg Score" value={`${summary.avgFormScore}/100`} color={color} testId="stat-score" />
-          <StatBox label="Full Depth" value={`${deepPct}%`} color="#4ade80" testId="stat-depth" />
+          <StatBox label="Total Reps" value={summary.totalReps} color="#4ade80" testId="stat-reps" />
+          <StatBox label="Form Score" value={`${summary.avgFormScore}/100`} color={color} testId="stat-score" />
+          {isCurl ? (
+            <StatBox
+              label="L / R"
+              value={`${summary.leftReps ?? 0} / ${summary.rightReps ?? 0}`}
+              color="#4ade80"
+              testId="stat-arms"
+            />
+          ) : (
+            <StatBox
+              label="Full Depth"
+              value={`${summary.totalReps > 0 ? Math.round(((summary.deepReps ?? 0) / summary.totalReps) * 100) : 0}%`}
+              color="#4ade80"
+              testId="stat-depth"
+            />
+          )}
         </div>
 
-        {summary.backRoundedCount > 0 || summary.kneeCaveCount > 0 ? (
+        {/* Exercise-specific issues */}
+        {isCurl ? (
           <div className="grid grid-cols-2 gap-3">
-            {summary.backRoundedCount > 0 && (
-              <StatBox label="Back Rounded" value={`${summary.backRoundedCount}x`} color="#f97316" testId="stat-back" />
+            {(summary.elbowSwingCount ?? 0) > 0 && (
+              <StatBox label="Elbow Swing" value={`${summary.elbowSwingCount}x`} color="#f97316" testId="stat-swing" />
             )}
-            {summary.kneeCaveCount > 0 && (
-              <StatBox label="Knee Cave" value={`${summary.kneeCaveCount}x`} color="#f97316" testId="stat-knees" />
+            {(summary.shortRangeCount ?? 0) > 0 && (
+              <StatBox label="Short Range" value={`${summary.shortRangeCount}x`} color="#f97316" testId="stat-range" />
             )}
           </div>
-        ) : null}
+        ) : (
+          <>
+            {((summary.backRoundedCount ?? 0) > 0 || (summary.kneeCaveCount ?? 0) > 0) && (
+              <div className="grid grid-cols-2 gap-3">
+                {(summary.backRoundedCount ?? 0) > 0 && (
+                  <StatBox label="Back Rounded" value={`${summary.backRoundedCount}x`} color="#f97316" testId="stat-back" />
+                )}
+                {(summary.kneeCaveCount ?? 0) > 0 && (
+                  <StatBox label="Knee Cave" value={`${summary.kneeCaveCount}x`} color="#f97316" testId="stat-knees" />
+                )}
+              </div>
+            )}
+          </>
+        )}
 
         {/* AI Feedback */}
         <div className="rounded-xl bg-muted/60 border border-border p-4">
@@ -79,7 +107,7 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
           {loading ? (
             <div className="flex items-center gap-2 text-muted-foreground">
               <Loader2 className="w-4 h-4 animate-spin" style={{ color: "#4ade80" }} />
-              <span className="text-sm">Analyzing your set...</span>
+              <span className="text-sm">Analysing your set...</span>
             </div>
           ) : (
             <p className="text-sm text-foreground leading-relaxed" data-testid="ai-feedback">
@@ -88,12 +116,12 @@ export function SummaryCard({ summary, onReset }: SummaryCardProps) {
           )}
         </div>
 
-        {/* Actions */}
+        {/* CTA */}
         <button
           onClick={onReset}
           className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-bold text-sm transition-all hover:opacity-90 active:scale-95"
           style={{
-            background: `linear-gradient(135deg, #4ade80, #22c55e)`,
+            background: "linear-gradient(135deg, #4ade80, #22c55e)",
             color: "#0a0f0a",
             boxShadow: "0 0 20px rgba(74,222,128,0.3)",
           }}
@@ -127,7 +155,7 @@ function StatBox({
       >
         {value}
       </span>
-      <span className="text-xs text-muted-foreground font-medium">{label}</span>
+      <span className="text-xs text-muted-foreground font-medium text-center">{label}</span>
     </div>
   );
 }
