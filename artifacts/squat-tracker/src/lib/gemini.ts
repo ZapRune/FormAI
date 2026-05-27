@@ -5,22 +5,24 @@ export interface SetSummary {
   reps: number;
   totalReps: number;
   avgFormScore: number;
-  // Squat-specific
+  // Squat
   deepReps?: number;
   backRoundedCount?: number;
   kneeCaveCount?: number;
-  // Curl-specific
+  forwardLeanCount?: number;
+  // Curl
   elbowSwingCount?: number;
   shortRangeCount?: number;
+  bodySwayCurlCount?: number;
   leftReps?: number;
   rightReps?: number;
 }
 
 export function getLetterGrade(avgScore: number): { grade: string; color: string } {
   if (avgScore >= 90) return { grade: "A", color: "#4ade80" };
-  if (avgScore >= 80) return { grade: "B", color: "#a3e635" };
-  if (avgScore >= 70) return { grade: "C", color: "#facc15" };
-  if (avgScore >= 60) return { grade: "D", color: "#f97316" };
+  if (avgScore >= 75) return { grade: "B", color: "#a3e635" };
+  if (avgScore >= 60) return { grade: "C", color: "#facc15" };
+  if (avgScore >= 45) return { grade: "D", color: "#f97316" };
   return { grade: "F", color: "#ef4444" };
 }
 
@@ -29,24 +31,30 @@ export async function generateAIFeedback(summary: SetSummary): Promise<string> {
   if (!apiKey) return generateFallbackFeedback(summary);
 
   const isSquat = summary.exercise === "squat";
+  const deepPct = isSquat && summary.totalReps > 0
+    ? Math.round(((summary.deepReps ?? 0) / summary.totalReps) * 100)
+    : null;
 
   const prompt = isSquat
-    ? `You are an encouraging expert personal trainer specialising in squat form.
-A user just completed a set of squats. Stats:
-- Total reps: ${summary.totalReps}
-- Reps with full depth (hip below knee): ${summary.deepReps ?? 0} / ${summary.totalReps}
-- Average form score: ${summary.avgFormScore}/100
+    ? `You are a brutally honest, no-nonsense strength coach. You do NOT sugarcoat. You tell people exactly what's wrong.
+A user just completed ${summary.totalReps} squats. Their form score was ${summary.avgFormScore}/100.
+Stats:
+- Reps with full depth (hip below knee): ${summary.deepReps ?? 0}/${summary.totalReps} (${deepPct}%)
 - Reps with back rounding: ${summary.backRoundedCount ?? 0}
 - Reps with knees caving in: ${summary.kneeCaveCount ?? 0}
-Write a short, friendly, encouraging 2-3 sentence summary. Be specific about what they did well and give one concrete actionable tip. No bullet points.`
+- Reps with excessive forward lean: ${summary.forwardLeanCount ?? 0}
 
-    : `You are an encouraging expert personal trainer specialising in bicep curl form.
-A user just completed a set of bicep curls. Stats:
-- Total reps: ${summary.totalReps} (Left: ${summary.leftReps ?? 0}, Right: ${summary.rightReps ?? 0})
-- Average form score: ${summary.avgFormScore}/100
-- Reps with elbow swinging forward: ${summary.elbowSwingCount ?? 0}
-- Reps without full range of motion (didn't reach peak contraction): ${summary.shortRangeCount ?? 0}
-Write a short, friendly, encouraging 2-3 sentence summary. Be specific about what they did well and give one concrete actionable tip. No bullet points.`;
+Be direct, specific, and critical. If the form score is below 70, call it out harshly. Name every issue detected. Give one clear fix to prioritise. 2-3 sentences max. No bullet points. No fluff.`
+
+    : `You are a brutally honest, no-nonsense strength coach. You do NOT sugarcoat. You tell people exactly what's wrong.
+A user just completed ${summary.totalReps} bicep curl reps. Their form score was ${summary.avgFormScore}/100.
+Stats:
+- Left arm reps: ${summary.leftReps ?? 0}, Right arm reps: ${summary.rightReps ?? 0}
+- Reps with elbow swinging: ${summary.elbowSwingCount ?? 0}
+- Reps without reaching full contraction (<65°): ${summary.shortRangeCount ?? 0}
+- Reps with body sway: ${summary.bodySwayCurlCount ?? 0}
+
+Be direct, specific, and critical. If the form score is below 70, call it out harshly. Name every issue detected. Give one clear fix to prioritise. 2-3 sentences max. No bullet points. No fluff.`;
 
   try {
     const response = await fetch(
@@ -56,7 +64,7 @@ Write a short, friendly, encouraging 2-3 sentence summary. Be specific about wha
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 200, temperature: 0.8 },
+          generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
         }),
       }
     );
@@ -70,35 +78,54 @@ Write a short, friendly, encouraging 2-3 sentence summary. Be specific about wha
 
 function generateFallbackFeedback(summary: SetSummary): string {
   const { totalReps, avgFormScore, exercise } = summary;
-  if (totalReps === 0) return "No reps recorded this set. Get into position and let's go!";
+  if (totalReps === 0) return "Zero reps recorded. Get in frame and actually do the exercise.";
 
   if (exercise === "curl") {
-    const swingPct = Math.round(((summary.elbowSwingCount ?? 0) / totalReps) * 100);
+    const swingRatio  = (summary.elbowSwingCount ?? 0) / totalReps;
+    const shortRatio  = (summary.shortRangeCount ?? 0) / totalReps;
+    const swayRatio   = (summary.bodySwayCurlCount ?? 0) / totalReps;
+
+    if (avgFormScore < 50) {
+      return `${avgFormScore}/100 — that's bad. Your elbows are swinging like a pendulum and you're throwing your whole body into the lift. That's not a curl, that's momentum. Pin your elbows to your sides, go lighter, and actually use your biceps.`;
+    }
+    if (swingRatio > 0.5) {
+      return `Your elbows swung forward on ${summary.elbowSwingCount} of ${totalReps} reps. You're using your front delts to cheat, not your biceps. Lighter weight, strict form — keep those elbows locked to your ribs.`;
+    }
+    if (shortRatio > 0.5) {
+      return `You stopped short on ${summary.shortRangeCount} of ${totalReps} reps — you never hit full contraction. Half reps build half muscles. Squeeze all the way up until your forearm nearly touches your bicep.`;
+    }
+    if (swayRatio > 0.5) {
+      return `You're swaying your torso on ${summary.bodySwayCurlCount} reps. Stand still — your legs and back aren't supposed to be helping. Brace your core and isolate the curl.`;
+    }
     if (avgFormScore >= 85) {
-      return `Great set! ${totalReps} solid reps with a ${avgFormScore}/100 form score. Your elbows stayed locked in — that's exactly the technique that builds real bicep strength!`;
+      return `Solid set — ${totalReps} reps at ${avgFormScore}/100. Elbows stayed controlled. Keep that up and add weight when it feels this clean.`;
     }
-    if (swingPct > 40) {
-      return `Nice effort on ${totalReps} reps! Your elbows are swinging a bit — try pinning them to your sides throughout the whole movement. You'll feel the biceps working much harder!`;
-    }
-    if ((summary.shortRangeCount ?? 0) > totalReps * 0.4) {
-      return `Solid ${totalReps} reps! Try squeezing all the way to the top so the angle drops under 70° — a full contraction makes every rep count more. You're close!`;
-    }
-    return `Good work — ${totalReps} reps with a ${avgFormScore}/100 score! Keep focusing on controlled movement and you'll build impressive arms in no time!`;
+    return `${totalReps} reps, ${avgFormScore}/100 — decent but not clean. Tighten up your elbow position and aim for a full squeeze at the top every single rep.`;
   }
 
-  // squat
-  const deepPct = Math.round(((summary.deepReps ?? 0) / totalReps) * 100);
+  // Squats
+  const deepPct = totalReps > 0 ? Math.round(((summary.deepReps ?? 0) / totalReps) * 100) : 0;
+  const backRatio  = (summary.backRoundedCount ?? 0) / totalReps;
+  const kneeRatio  = (summary.kneeCaveCount ?? 0) / totalReps;
+  const leanRatio  = (summary.forwardLeanCount ?? 0) / totalReps;
+
+  if (avgFormScore < 50) {
+    return `${avgFormScore}/100 — that's a rough set. Multiple form issues detected across your reps. Fix the basics before adding weight: chest up, knees tracking over toes, and get your hips below parallel.`;
+  }
+  if (backRatio > 0.5) {
+    return `Your back was rounding on ${summary.backRoundedCount} of ${totalReps} reps. That puts your spine under serious load. Brace your core before you descend and keep your chest up — don't let the weight fold you forward.`;
+  }
+  if (kneeRatio > 0.5) {
+    return `Your knees caved inward on ${summary.kneeCaveCount} of ${totalReps} reps. This is a glute and mobility issue. Push your knees out actively throughout the whole movement.`;
+  }
+  if (deepPct < 40) {
+    return `Only ${deepPct}% of your reps hit parallel. Squatting high is not squatting. Work on hip mobility and go lighter until you can consistently hit depth.`;
+  }
+  if (leanRatio > 0.5) {
+    return `You're leaning too far forward on ${summary.forwardLeanCount} reps. Likely tight ankles or weak upper back. Work on ankle mobility and keep your torso as upright as possible.`;
+  }
   if (avgFormScore >= 85 && deepPct >= 80) {
-    return `Excellent set! ${totalReps} solid reps with great depth on ${deepPct}% of them. Your ${avgFormScore}/100 form score shows real consistency — keep it up!`;
+    return `Clean set — ${totalReps} reps at ${avgFormScore}/100 with ${deepPct}% hitting full depth. That's how it's done.`;
   }
-  if ((summary.backRoundedCount ?? 0) > totalReps * 0.5) {
-    return `Good effort on ${totalReps} reps! Your back is rounding a bit — try bracing your core before descending and keep your chest up. You've got this!`;
-  }
-  if ((summary.kneeCaveCount ?? 0) > totalReps * 0.5) {
-    return `Solid ${totalReps} reps! Focus on pushing your knees out in line with your toes — "spread the floor" with your feet. That'll clean up your form fast!`;
-  }
-  if (deepPct < 50) {
-    return `Nice work on ${totalReps} reps! Try to drop a little deeper — aim to get your hip crease below your knee for full range of motion. It's harder but so worth it!`;
-  }
-  return `Good set — ${totalReps} reps with a ${avgFormScore}/100 score! Keep focusing on depth and bracing and you'll be hitting perfect squats in no time!`;
+  return `${totalReps} reps, ${avgFormScore}/100. There's still room to tighten this up — focus on the biggest issue flagged and don't rush adding weight.`;
 }

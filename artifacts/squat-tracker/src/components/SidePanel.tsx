@@ -14,6 +14,7 @@ interface SidePanelProps {
   squatPhase?: string;
   backRounded?: boolean;
   kneesCaringIn?: boolean;
+  forwardLean?: boolean;
   leftKneeAngle?: number;
   rightKneeAngle?: number;
   // Curl props
@@ -23,6 +24,7 @@ interface SidePanelProps {
   rightPhase?: CurlArmPhase;
   leftElbowSwing?: boolean;
   rightElbowSwing?: boolean;
+  bodySway?: boolean;
   leftReps?: number;
   rightReps?: number;
 }
@@ -52,6 +54,7 @@ export function SidePanel({
   squatPhase,
   backRounded,
   kneesCaringIn,
+  forwardLean = false,
   leftKneeAngle = 180,
   rightKneeAngle = 180,
   leftElbowAngle = 180,
@@ -60,6 +63,7 @@ export function SidePanel({
   rightPhase = "rest",
   leftElbowSwing = false,
   rightElbowSwing = false,
+  bodySway = false,
   leftReps = 0,
   rightReps = 0,
 }: SidePanelProps) {
@@ -168,33 +172,15 @@ export function SidePanel({
 
         {isCurl ? (
           <>
-            <FormCheck
-              label="Left Elbow"
-              ok={!leftElbowSwing}
-              okText="Locked in"
-              failText="Swinging fwd"
-            />
-            <FormCheck
-              label="Right Elbow"
-              ok={!rightElbowSwing}
-              okText="Locked in"
-              failText="Swinging fwd"
-            />
+            <FormCheck label="Left Elbow"  ok={!leftElbowSwing}  okText="Locked in" failText="Swinging fwd" />
+            <FormCheck label="Right Elbow" ok={!rightElbowSwing} okText="Locked in" failText="Swinging fwd" />
+            <FormCheck label="Body Still"  ok={!bodySway}        okText="Stable"    failText="Swaying" />
           </>
         ) : (
           <>
-            <FormCheck
-              label="Back Straight"
-              ok={!backRounded}
-              okText="Looking good"
-              failText="Rounding detected"
-            />
-            <FormCheck
-              label="Knees Out"
-              ok={!kneesCaringIn}
-              okText="Aligned"
-              failText="Caving inward"
-            />
+            <FormCheck label="Back Straight" ok={!backRounded}   okText="Good"      failText="Rounding" />
+            <FormCheck label="Knees Out"     ok={!kneesCaringIn} okText="Aligned"   failText="Caving in" />
+            <FormCheck label="Torso Upright" ok={!forwardLean}   okText="Good"      failText="Too far fwd" />
           </>
         )}
       </div>

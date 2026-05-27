@@ -3,6 +3,8 @@ import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import {
   computeSquatMetrics,
   computeCurlMetrics,
+  scoreSquatRep,
+  scoreCurlRep,
   drawSkeleton,
   type SquatMetrics,
   type CurlMetrics,
@@ -13,61 +15,93 @@ import {
 import { SidePanel } from "@/components/SidePanel";
 import { SummaryCard } from "@/components/SummaryCard";
 import type { SetSummary } from "@/lib/gemini";
-import { Camera, CameraOff, Loader2, Dumbbell } from "lucide-react";
+import { Camera, CameraOff, Loader2 } from "lucide-react";
+import { Dumbbell } from "lucide-react";
 
 type AppState = "idle" | "loading" | "ready" | "tracking" | "summary";
 
 const DEFAULT_SQUAT: SquatMetrics = {
   leftKneeAngle: 180, rightKneeAngle: 180,
   leftHipAngle: 180,  rightHipAngle: 180,
-  hipBelowKnee: false, backRounded: false, kneesCaringIn: false,
-  formScore: 100, phase: "standing",
+  hipBelowKnee: false, backRounded: false,
+  kneesCaringIn: false, forwardLean: false,
+  torsoAngleDeg: 0, kneeCaveRatio: 1,
+  formScore: 100, isActivePhase: false, phase: "standing",
 };
 
 const DEFAULT_CURL: CurlMetrics & { leftRepComplete: boolean; rightRepComplete: boolean } = {
   leftElbowAngle: 180, rightElbowAngle: 180,
   leftShoulderAngle: 90, rightShoulderAngle: 90,
   leftElbowSwing: false, rightElbowSwing: false,
+  leftElbowTilt: 0, rightElbowTilt: 0,
   leftFullRange: false, rightFullRange: false,
-  formScore: 100, leftPhase: "rest", rightPhase: "rest",
+  bodySway: false, formScore: 100, isActivePhase: false,
+  leftPhase: "rest", rightPhase: "rest",
   leftRepComplete: false, rightRepComplete: false,
 };
 
 export default function SquatTracker() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef      = useRef<HTMLVideoElement>(null);
+  const canvasRef     = useRef<HTMLCanvasElement>(null);
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
-  const animFrameRef = useRef<number>(0);
+  const animFrameRef  = useRef<number>(0);
   const lastVideoTimeRef = useRef<number>(-1);
 
-  const [appState, setAppState] = useState<AppState>("idle");
-  const [exercise, setExercise] = useState<ExerciseMode>("squat");
+  const [appState, setAppState]     = useState<AppState>("idle");
+  const [exercise, setExercise]     = useState<ExerciseMode>("squat");
   const [squatMetrics, setSquatMetrics] = useState<SquatMetrics>(DEFAULT_SQUAT);
-  const [curlMetrics, setCurlMetrics] = useState(DEFAULT_CURL);
-  const [repCount, setRepCount] = useState(0);
-  const [showWarning, setShowWarning] = useState<string | null>(null);
-  const [summary, setSummary] = useState<SetSummary | null>(null);
+  const [curlMetrics, setCurlMetrics]   = useState(DEFAULT_CURL);
+  const [repCount, setRepCount]     = useState(0);
+  const [showWarning, setShowWarning]   = useState<string | null>(null);
+  const [summary, setSummary]       = useState<SetSummary | null>(null);
 
-  // ── Persistent state refs (survive re-renders without stale closure) ────────
+  // ── Squat session state ────────────────────────────────────────────────────
+  // repScores: one score per COMPLETED REP (not per frame)
   const squatSessionRef = useRef({
-    formScores: [] as number[],
-    deepReps: 0, backRoundedCount: 0, kneeCaveCount: 0,
-    repCount: 0,
+    repScores:        [] as number[],   // per-rep scores only
+    repCount:         0,
+    deepReps:         0,
+    backRoundedCount: 0,
+    kneeCaveCount:    0,
+    forwardLeanCount: 0,
     lastPhase: "standing" as SquatMetrics["phase"],
-    bottomReached: false, repHadBackRound: false, repHadKneeCave: false,
+    bottomReached: false,
+    // Per-rep worst-case trackers
+    repHadBackRound:  false,
+    repHadKneeCave:   false,
+    repHadForwardLean:false,
+    repReachedDepth:  false,
+    repMaxTorsoAngle: 0,
+    repMinKneeCaveRatio: 1,
+    repMinHipKneeGap:   1,   // positive = hip above knee; goes negative when depth hit
+    // Live form score (only during active phase)
+    liveFormScore: 100,
     warningTimer: 0,
   });
 
+  // ── Curl session state ─────────────────────────────────────────────────────
   const curlSessionRef = useRef({
-    formScores: [] as number[],
-    leftReps: 0, rightReps: 0,
-    elbowSwingReps: 0, shortRangeReps: 0,
-    leftPhase: "rest" as CurlArmPhase,
+    repScores:        [] as number[],
+    leftReps:         0,
+    rightReps:        0,
+    elbowSwingReps:   0,
+    shortRangeReps:   0,
+    bodySwayCurlCount:0,
+    leftPhase:  "rest" as CurlArmPhase,
     rightPhase: "rest" as CurlArmPhase,
-    leftPeak: { value: false },
+    leftPeak:  { value: false },
     rightPeak: { value: false },
-    leftHadSwing: false, rightHadSwing: false,
-    leftHadShortRange: false, rightHadShortRange: false,
+    // Per-rep worst-case
+    repHadLeftSwing:  false,
+    repHadRightSwing: false,
+    repHadBodySway:   false,
+    repLeftPeak:      false,
+    repRightPeak:     false,
+    repMaxLeftTilt:   0,
+    repMaxRightTilt:  0,
+    repMinLeftAngle:  180,
+    repMinRightAngle: 180,
+    liveFormScore: 100,
     warningTimer: 0,
   });
 
@@ -95,7 +129,7 @@ export default function SquatTracker() {
     setAppState("ready");
   }, []);
 
-  // ── Start camera + session ──────────────────────────────────────────────────
+  // ── Start camera ────────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
     if (!landmarkerRef.current) await loadPoseLandmarker();
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -106,21 +140,25 @@ export default function SquatTracker() {
       await videoRef.current.play();
     }
 
-    // Reset squat session
     squatSessionRef.current = {
-      formScores: [], deepReps: 0, backRoundedCount: 0, kneeCaveCount: 0,
-      repCount: 0, lastPhase: "standing", bottomReached: false,
-      repHadBackRound: false, repHadKneeCave: false, warningTimer: 0,
+      repScores: [], repCount: 0, deepReps: 0,
+      backRoundedCount: 0, kneeCaveCount: 0, forwardLeanCount: 0,
+      lastPhase: "standing", bottomReached: false,
+      repHadBackRound: false, repHadKneeCave: false, repHadForwardLean: false,
+      repReachedDepth: false, repMaxTorsoAngle: 0,
+      repMinKneeCaveRatio: 1, repMinHipKneeGap: 1,
+      liveFormScore: 100, warningTimer: 0,
     };
-    // Reset curl session
     curlSessionRef.current = {
-      formScores: [], leftReps: 0, rightReps: 0,
-      elbowSwingReps: 0, shortRangeReps: 0,
+      repScores: [], leftReps: 0, rightReps: 0,
+      elbowSwingReps: 0, shortRangeReps: 0, bodySwayCurlCount: 0,
       leftPhase: "rest", rightPhase: "rest",
       leftPeak: { value: false }, rightPeak: { value: false },
-      leftHadSwing: false, rightHadSwing: false,
-      leftHadShortRange: false, rightHadShortRange: false,
-      warningTimer: 0,
+      repHadLeftSwing: false, repHadRightSwing: false, repHadBodySway: false,
+      repLeftPeak: false, repRightPeak: false,
+      repMaxLeftTilt: 0, repMaxRightTilt: 0,
+      repMinLeftAngle: 180, repMinRightAngle: 180,
+      liveFormScore: 100, warningTimer: 0,
     };
 
     setRepCount(0);
@@ -148,26 +186,29 @@ export default function SquatTracker() {
     if (ex === "squat") {
       const s = squatSessionRef.current;
       const total = s.repCount;
-      const avg = s.formScores.length > 0
-        ? Math.round(s.formScores.reduce((a, b) => a + b, 0) / s.formScores.length)
-        : 100;
+      // Average of PER-REP scores — never inflated by idle frames
+      const avg = s.repScores.length > 0
+        ? Math.round(s.repScores.reduce((a, b) => a + b, 0) / s.repScores.length)
+        : 0;
       setSummary({
         exercise: "squat", reps: total, totalReps: total, avgFormScore: avg,
         deepReps: s.deepReps,
         backRoundedCount: s.backRoundedCount,
         kneeCaveCount: s.kneeCaveCount,
+        forwardLeanCount: s.forwardLeanCount,
       });
     } else {
       const c = curlSessionRef.current;
       const total = c.leftReps + c.rightReps;
-      const avg = c.formScores.length > 0
-        ? Math.round(c.formScores.reduce((a, b) => a + b, 0) / c.formScores.length)
-        : 100;
+      const avg = c.repScores.length > 0
+        ? Math.round(c.repScores.reduce((a, b) => a + b, 0) / c.repScores.length)
+        : 0;
       setSummary({
         exercise: "curl", reps: total, totalReps: total, avgFormScore: avg,
         leftReps: c.leftReps, rightReps: c.rightReps,
         elbowSwingCount: c.elbowSwingReps,
         shortRangeCount: c.shortRangeReps,
+        bodySwayCurlCount: c.bodySwayCurlCount,
       });
     }
     setAppState("summary");
@@ -190,8 +231,8 @@ export default function SquatTracker() {
     let cqState = { ...DEFAULT_CURL };
 
     const detect = () => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
+      const video    = videoRef.current;
+      const canvas   = canvasRef.current;
       const landmarker = landmarkerRef.current;
       if (!video || !canvas || !landmarker || video.paused || video.ended) {
         animFrameRef.current = requestAnimationFrame(detect);
@@ -207,7 +248,7 @@ export default function SquatTracker() {
       const ctx = canvas.getContext("2d");
       if (!ctx) { animFrameRef.current = requestAnimationFrame(detect); return; }
 
-      canvas.width = video.videoWidth || 1280;
+      canvas.width  = video.videoWidth  || 1280;
       canvas.height = video.videoHeight || 720;
 
       const ex = exerciseRef.current;
@@ -216,85 +257,169 @@ export default function SquatTracker() {
         const lms = result.landmarks[0] as Landmark[];
 
         if (ex === "squat") {
-          // ── SQUAT ──────────────────────────────────────────────────────────
+          // ── SQUAT ─────────────────────────────────────────────────────────
           sqState = computeSquatMetrics(lms, sqState.phase);
           drawSkeleton(ctx, lms, canvas.width, canvas.height, "squat", sqState, null);
 
           const s = squatSessionRef.current;
-          s.formScores.push(sqState.formScore);
-          if (sqState.backRounded) s.repHadBackRound = true;
-          if (sqState.kneesCaringIn) s.repHadKneeCave = true;
-
           const currPhase = sqState.phase;
+
+          // Only accumulate worst-case data during active phases
+          if (sqState.isActivePhase) {
+            if (sqState.backRounded)   s.repHadBackRound   = true;
+            if (sqState.kneesCaringIn) s.repHadKneeCave    = true;
+            if (sqState.forwardLean)   s.repHadForwardLean = true;
+
+            // Track worst values for proportional scoring
+            s.repMaxTorsoAngle    = Math.max(s.repMaxTorsoAngle, sqState.torsoAngleDeg);
+            s.repMinKneeCaveRatio = Math.min(s.repMinKneeCaveRatio, sqState.kneeCaveRatio);
+
+            // Track depth: hipY - kneeY (positive = hip above knee, negative = below)
+            const midHipY  = (lms[23]?.y + lms[24]?.y) / 2;
+            const midKneeY = (lms[25]?.y + lms[26]?.y) / 2;
+            const hipKneeGap = midHipY - midKneeY; // positive = hip below knee
+            s.repMinHipKneeGap = Math.max(s.repMinHipKneeGap, hipKneeGap); // track best depth
+            if (hipKneeGap > 0) s.repReachedDepth = true;
+
+            // Live form score (only during movement — drives the ring)
+            s.liveFormScore = sqState.formScore;
+          } else {
+            s.liveFormScore = 100; // looks fine when standing
+          }
+
           if (currPhase === "bottom") s.bottomReached = true;
 
+          // Rep completion: ascending → standing
           if (s.lastPhase === "ascending" && currPhase === "standing" && s.bottomReached) {
             s.repCount++;
-            if (sqState.hipBelowKnee) s.deepReps++;
-            if (s.repHadBackRound) s.backRoundedCount++;
-            if (s.repHadKneeCave) s.kneeCaveCount++;
-            s.bottomReached = false;
-            s.repHadBackRound = false;
-            s.repHadKneeCave = false;
+
+            // Score THIS rep based on what happened during it
+            const repScore = scoreSquatRep({
+              hadBackRound:      s.repHadBackRound,
+              hadKneeCave:       s.repHadKneeCave,
+              reachedDepth:      s.repReachedDepth,
+              hadForwardLean:    s.repHadForwardLean,
+              maxTorsoAngle:     s.repMaxTorsoAngle,
+              minKneeCaveRatio:  s.repMinKneeCaveRatio,
+              minHipKneeGap:     -(s.repMinHipKneeGap), // negate: negative = short of parallel
+            });
+            s.repScores.push(repScore);
+
+            // Accumulate set-level flags
+            if (s.repReachedDepth) s.deepReps++;
+            if (s.repHadBackRound)   s.backRoundedCount++;
+            if (s.repHadKneeCave)    s.kneeCaveCount++;
+            if (s.repHadForwardLean) s.forwardLeanCount++;
+
+            // Reset per-rep trackers
+            s.bottomReached       = false;
+            s.repHadBackRound     = false;
+            s.repHadKneeCave      = false;
+            s.repHadForwardLean   = false;
+            s.repReachedDepth     = false;
+            s.repMaxTorsoAngle    = 0;
+            s.repMinKneeCaveRatio = 1;
+            s.repMinHipKneeGap    = -1; // reset to "haven't reached depth"
+
             setRepCount(s.repCount);
           }
           s.lastPhase = currPhase;
 
-          // "Go Deeper!" warning
+          // "Go Deeper!" — descending/bottom but hip not below knee
           const avgKnee = (sqState.leftKneeAngle + sqState.rightKneeAngle) / 2;
-          if ((currPhase === "descending" || currPhase === "bottom") && !sqState.hipBelowKnee && avgKnee < 130) {
+          if ((currPhase === "descending" || currPhase === "bottom") && !sqState.hipBelowKnee && avgKnee < 125) {
             s.warningTimer++;
-            if (s.warningTimer > 6) setShowWarning("Go Deeper!");
+            if (s.warningTimer > 8) setShowWarning("Go Deeper!");
           } else {
             s.warningTimer = 0;
             setShowWarning(null);
           }
 
-          setSquatMetrics({ ...sqState });
+          setSquatMetrics({ ...sqState, formScore: s.liveFormScore });
 
         } else {
-          // ── BICEP CURL ─────────────────────────────────────────────────────
+          // ── BICEP CURL ────────────────────────────────────────────────────
           const c = curlSessionRef.current;
           cqState = computeCurlMetrics(
-            lms,
-            c.leftPhase,
-            c.rightPhase,
-            c.leftPeak,
-            c.rightPeak
+            lms, c.leftPhase, c.rightPhase,
+            c.leftPeak, c.rightPeak
           );
           drawSkeleton(ctx, lms, canvas.width, canvas.height, "curl", null, cqState);
 
-          c.formScores.push(cqState.formScore);
-          c.leftPhase = cqState.leftPhase;
+          c.leftPhase  = cqState.leftPhase;
           c.rightPhase = cqState.rightPhase;
 
-          // Track swing per arm
-          if (cqState.leftElbowSwing) c.leftHadSwing = true;
-          if (cqState.rightElbowSwing) c.rightHadSwing = true;
-          if (!cqState.leftFullRange && cqState.leftPhase === "curling") c.leftHadShortRange = true;
-          if (!cqState.rightFullRange && cqState.rightPhase === "curling") c.rightHadShortRange = true;
+          // Only accumulate worst-case during active phases
+          if (cqState.isActivePhase) {
+            if (cqState.leftElbowSwing)  c.repHadLeftSwing  = true;
+            if (cqState.rightElbowSwing) c.repHadRightSwing = true;
+            if (cqState.bodySway)        c.repHadBodySway   = true;
+            if (cqState.leftPeak  || cqState.leftElbowAngle  < 65) c.repLeftPeak  = true;
+            if (cqState.rightPeak || cqState.rightElbowAngle < 65) c.repRightPeak = true;
 
-          // Count reps per arm
+            c.repMaxLeftTilt   = Math.max(c.repMaxLeftTilt,   cqState.leftElbowTilt);
+            c.repMaxRightTilt  = Math.max(c.repMaxRightTilt,  cqState.rightElbowTilt);
+            c.repMinLeftAngle  = Math.min(c.repMinLeftAngle,  cqState.leftElbowAngle);
+            c.repMinRightAngle = Math.min(c.repMinRightAngle, cqState.rightElbowAngle);
+
+            c.liveFormScore = cqState.formScore;
+          } else {
+            c.liveFormScore = 100;
+          }
+
+          // Left rep completion
           if (cqState.leftRepComplete) {
             c.leftReps++;
-            if (c.leftHadSwing) c.elbowSwingReps++;
-            if (c.leftHadShortRange) c.shortRangeReps++;
-            c.leftHadSwing = false;
-            c.leftHadShortRange = false;
-            setRepCount(c.leftReps + c.rightReps);
-          }
-          if (cqState.rightRepComplete) {
-            c.rightReps++;
-            if (c.rightHadSwing) c.elbowSwingReps++;
-            if (c.rightHadShortRange) c.shortRangeReps++;
-            c.rightHadSwing = false;
-            c.rightHadShortRange = false;
+            const repScore = scoreCurlRep({
+              hadLeftSwing:  c.repHadLeftSwing,
+              hadRightSwing: false,
+              hadBodySway:   c.repHadBodySway,
+              reachedPeak:   c.repLeftPeak,
+              maxLeftTilt:   c.repMaxLeftTilt,
+              maxRightTilt:  0,
+              minElbowAngle: c.repMinLeftAngle,
+            });
+            c.repScores.push(repScore);
+            if (c.repHadLeftSwing) c.elbowSwingReps++;
+            if (!c.repLeftPeak)    c.shortRangeReps++;
+            if (c.repHadBodySway)  c.bodySwayCurlCount++;
+            // Reset left-side trackers
+            c.repHadLeftSwing  = false;
+            c.repHadBodySway   = false;
+            c.repLeftPeak      = false;
+            c.repMaxLeftTilt   = 0;
+            c.repMinLeftAngle  = 180;
             setRepCount(c.leftReps + c.rightReps);
           }
 
-          // "Full Range!" warning — arm is curling but peak not reached and angle stalled above 90°
-          const leftStalled = cqState.leftPhase === "curling" && cqState.leftElbowAngle > 90;
-          const rightStalled = cqState.rightPhase === "curling" && cqState.rightElbowAngle > 90;
+          // Right rep completion
+          if (cqState.rightRepComplete) {
+            c.rightReps++;
+            const repScore = scoreCurlRep({
+              hadLeftSwing:  false,
+              hadRightSwing: c.repHadRightSwing,
+              hadBodySway:   c.repHadBodySway,
+              reachedPeak:   c.repRightPeak,
+              maxLeftTilt:   0,
+              maxRightTilt:  c.repMaxRightTilt,
+              minElbowAngle: c.repMinRightAngle,
+            });
+            c.repScores.push(repScore);
+            if (c.repHadRightSwing) c.elbowSwingReps++;
+            if (!c.repRightPeak)    c.shortRangeReps++;
+            if (c.repHadBodySway)   c.bodySwayCurlCount++;
+            // Reset right-side trackers
+            c.repHadRightSwing = false;
+            c.repHadBodySway   = false;
+            c.repRightPeak     = false;
+            c.repMaxRightTilt  = 0;
+            c.repMinRightAngle = 180;
+            setRepCount(c.leftReps + c.rightReps);
+          }
+
+          // "Full Range!" warning
+          const leftStalled  = cqState.leftPhase  === "curling" && cqState.leftElbowAngle  > 95;
+          const rightStalled = cqState.rightPhase === "curling" && cqState.rightElbowAngle > 95;
           if (leftStalled || rightStalled) {
             c.warningTimer++;
             if (c.warningTimer > 15) setShowWarning("Full Range!");
@@ -303,7 +428,7 @@ export default function SquatTracker() {
             setShowWarning(null);
           }
 
-          setCurlMetrics({ ...cqState });
+          setCurlMetrics({ ...cqState, formScore: c.liveFormScore });
         }
       } else {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -319,11 +444,12 @@ export default function SquatTracker() {
   useEffect(() => () => { stopCamera(); }, [stopCamera]);
 
   const isTracking = appState === "tracking";
-  const isCurl = exercise === "curl";
+  const isCurl     = exercise === "curl";
+  const liveScore  = isCurl ? curlMetrics.formScore : squatMetrics.formScore;
 
   return (
     <div className="flex h-screen w-screen bg-background overflow-hidden">
-      {/* Main video area */}
+      {/* Video area */}
       <div className="flex-1 relative flex flex-col overflow-hidden">
         <div className="relative flex-1 bg-black overflow-hidden">
           <video
@@ -345,34 +471,15 @@ export default function SquatTracker() {
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/65">
               {appState === "loading" ? (
                 <div className="flex flex-col items-center gap-3">
-                  <Loader2
-                    className="w-10 h-10 text-green-400 animate-spin"
-                    style={{ filter: "drop-shadow(0 0 8px #4ade80)" }}
-                  />
-                  <p className="text-green-400 font-semibold text-sm tracking-wide">
-                    Loading pose model…
-                  </p>
+                  <Loader2 className="w-10 h-10 text-green-400 animate-spin" style={{ filter: "drop-shadow(0 0 8px #4ade80)" }} />
+                  <p className="text-green-400 font-semibold text-sm tracking-wide">Loading pose model…</p>
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-5">
-                  {/* Exercise picker */}
                   <div className="flex gap-3">
-                    <ExercisePicker
-                      label="Squat"
-                      icon="🦵"
-                      active={!isCurl}
-                      onClick={() => setExercise("squat")}
-                      disabled={isTracking}
-                    />
-                    <ExercisePicker
-                      label="Bicep Curl"
-                      icon="💪"
-                      active={isCurl}
-                      onClick={() => setExercise("curl")}
-                      disabled={isTracking}
-                    />
+                    <ExercisePicker label="Squat"      icon="🦵" active={!isCurl} onClick={() => setExercise("squat")} />
+                    <ExercisePicker label="Bicep Curl" icon="💪" active={isCurl}  onClick={() => setExercise("curl")}  />
                   </div>
-
                   <div
                     className="w-20 h-20 rounded-full border-2 border-green-400 flex items-center justify-center"
                     style={{ boxShadow: "0 0 30px rgba(74,222,128,0.3)" }}
@@ -383,7 +490,7 @@ export default function SquatTracker() {
                     <p className="text-white font-bold text-lg">Ready to Track</p>
                     <p className="text-muted-foreground text-sm mt-1">
                       {isCurl
-                        ? "Stand facing the camera so your arms are clearly visible"
+                        ? "Face the camera so both arms are clearly visible"
                         : "Position yourself so your full body is visible from the side"}
                     </p>
                   </div>
@@ -398,45 +505,34 @@ export default function SquatTracker() {
               className="absolute top-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl border-2 border-red-400 bg-red-500/20 backdrop-blur-sm warn-glow"
               data-testid="warning-banner"
             >
-              <span
-                className="text-red-400 font-black text-xl tracking-wide"
-                style={{ textShadow: "0 0 10px rgba(239,68,68,0.8)" }}
-              >
+              <span className="text-red-400 font-black text-xl tracking-wide" style={{ textShadow: "0 0 10px rgba(239,68,68,0.8)" }}>
                 {showWarning}
               </span>
             </div>
           )}
 
-          {/* Exercise label in corner */}
+          {/* Exercise badge */}
           {isTracking && (
             <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-black/50 border border-green-400/20">
               <Dumbbell className="w-3 h-3 text-green-400" />
-              <span className="text-xs font-bold text-green-400">
-                {isCurl ? "Bicep Curl" : "Squat"}
-              </span>
+              <span className="text-xs font-bold text-green-400">{isCurl ? "Bicep Curl" : "Squat"}</span>
             </div>
           )}
 
-          {/* Form issue overlays */}
+          {/* Per-frame form issue alerts */}
           {isTracking && (
             <div className="absolute bottom-4 left-4 flex flex-col gap-2">
               {isCurl ? (
                 <>
-                  {curlMetrics.leftElbowSwing && (
-                    <FormAlert text="⚠ Left Elbow Swinging" testId="left-swing-warning" color="orange" />
-                  )}
-                  {curlMetrics.rightElbowSwing && (
-                    <FormAlert text="⚠ Right Elbow Swinging" testId="right-swing-warning" color="orange" />
-                  )}
+                  {curlMetrics.leftElbowSwing  && <FormAlert text="⚠ Left Elbow Swinging"  testId="left-swing-warning"  color="orange" />}
+                  {curlMetrics.rightElbowSwing && <FormAlert text="⚠ Right Elbow Swinging" testId="right-swing-warning" color="orange" />}
+                  {curlMetrics.bodySway        && <FormAlert text="⚠ Body Swaying"          testId="body-sway-warning"   color="orange" />}
                 </>
               ) : (
                 <>
-                  {squatMetrics.backRounded && (
-                    <FormAlert text="⚠ Back Rounding" testId="back-warning" color="orange" />
-                  )}
-                  {squatMetrics.kneesCaringIn && (
-                    <FormAlert text="⚠ Knees Caving In" testId="knee-warning" color="red" />
-                  )}
+                  {squatMetrics.backRounded   && <FormAlert text="⚠ Back Rounding"    testId="back-warning" color="orange" />}
+                  {squatMetrics.kneesCaringIn && <FormAlert text="⚠ Knees Caving In"  testId="knee-warning" color="red"    />}
+                  {squatMetrics.forwardLean   && <FormAlert text="⚠ Excessive Lean"   testId="lean-warning" color="orange" />}
                 </>
               )}
             </div>
@@ -451,12 +547,12 @@ export default function SquatTracker() {
         </div>
       </div>
 
-      {/* Right panel */}
+      {/* Side panel */}
       <div className="w-72 border-l border-border bg-background flex flex-col p-4 gap-4 flex-shrink-0">
         <SidePanel
           exercise={exercise}
           repCount={repCount}
-          formScore={isCurl ? curlMetrics.formScore : squatMetrics.formScore}
+          formScore={liveScore}
           isTracking={isTracking}
           onEndSet={endSet}
           onStart={startCamera}
@@ -464,6 +560,7 @@ export default function SquatTracker() {
           squatPhase={squatMetrics.phase}
           backRounded={squatMetrics.backRounded}
           kneesCaringIn={squatMetrics.kneesCaringIn}
+          forwardLean={squatMetrics.forwardLean}
           leftKneeAngle={squatMetrics.leftKneeAngle}
           rightKneeAngle={squatMetrics.rightKneeAngle}
           leftElbowAngle={curlMetrics.leftElbowAngle}
@@ -472,12 +569,13 @@ export default function SquatTracker() {
           rightPhase={curlMetrics.rightPhase}
           leftElbowSwing={curlMetrics.leftElbowSwing}
           rightElbowSwing={curlMetrics.rightElbowSwing}
+          bodySway={curlMetrics.bodySway}
           leftReps={curlSessionRef.current.leftReps}
           rightReps={curlSessionRef.current.rightReps}
         />
       </div>
 
-      {/* Summary modal */}
+      {/* Summary */}
       {appState === "summary" && summary && (
         <SummaryCard summary={summary} onReset={resetForNewSet} />
       )}
@@ -485,19 +583,12 @@ export default function SquatTracker() {
   );
 }
 
-function ExercisePicker({
-  label, icon, active, onClick, disabled,
-}: {
-  label: string;
-  icon: string;
-  active: boolean;
-  onClick: () => void;
-  disabled: boolean;
+function ExercisePicker({ label, icon, active, onClick }: {
+  label: string; icon: string; active: boolean; onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={disabled}
       className={`flex flex-col items-center gap-1.5 px-5 py-3 rounded-2xl border-2 font-bold text-sm transition-all
         ${active
           ? "border-green-400 bg-green-400/15 text-green-400"
